@@ -1,6 +1,7 @@
 import { NestFactory, Reflector } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { PerformanceInterceptor } from './common/interceptors/performance.interceptor';
@@ -13,6 +14,9 @@ async function bootstrap() {
   const port = configService.get<number>('PORT', 3000);
 
   app.use(cookieParser());
+
+  // WebSocket adapter — required for @nestjs/platform-socket.io
+  app.useWebSocketAdapter(new IoAdapter(app));
 
   app.useGlobalPipes(
     new ValidationPipe({

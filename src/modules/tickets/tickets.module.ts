@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { TicketsListener } from './tickets.listener';
 
-@Module({})
+@Module({
+  providers: [TicketsListener],
+})
 export class TicketsModule {}

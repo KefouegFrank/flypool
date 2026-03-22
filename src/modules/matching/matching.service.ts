@@ -1,13 +1,12 @@
-import {
-  Injectable,
-  Logger,
-  ConflictException,
-} from '@nestjs/common';
+import { Injectable, Logger, ConflictException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { Events } from '../events/events.constants';
-import * as EventPayloads from '../events/events.payloads';
+import type {
+  TripDelayAnnouncedPayload,
+  BookingInvalidatedPayload,
+} from '../events/events.payloads';
 
 // Estimated transit duration from pickup point to airport in minutes
 const ESTIMATED_TRANSIT_MINS = 90;
@@ -94,7 +93,7 @@ export class MatchingService {
    * Invalidates any booking where the new delay breaks the safety buffer.
    */
   @OnEvent(Events.TRIP_DELAY_ANNOUNCED)
-  async recalculateOnDelay(payload: EventPayloads.TripDelayAnnouncedPayload): Promise<void> {
+  async recalculateOnDelay(payload: TripDelayAnnouncedPayload): Promise<void> {
     this.logger.log(
       `Recalculating bookings for trip ${payload.tripId} — new delay: ${payload.delayMinutes} min`,
     );
@@ -105,7 +104,9 @@ export class MatchingService {
     });
 
     if (!trip) {
-      this.logger.error(`Trip ${payload.tripId} not found during recalculation`);
+      this.logger.error(
+        `Trip ${payload.tripId} not found during recalculation`,
+      );
       return;
     }
 
@@ -121,20 +122,19 @@ export class MatchingService {
     });
 
     if (confirmedBookings.length === 0) {
-      this.logger.log(`No confirmed bookings to recalculate for trip ${payload.tripId}`);
+      this.logger.log(
+        `No confirmed bookings to recalculate for trip ${payload.tripId}`,
+      );
       return;
     }
 
     const invalidatedIds: string[] = [];
 
     for (const booking of confirmedBookings) {
-      const isStillValid = this.validateBuffer(
-        booking.passengerFlight,
-        {
-          departureTime: trip.departureTime,
-          delayMinutes: trip.delayMinutes,
-        },
-      );
+      const isStillValid = this.validateBuffer(booking.passengerFlight, {
+        departureTime: trip.departureTime,
+        delayMinutes: trip.delayMinutes,
+      });
 
       if (!isStillValid) {
         invalidatedIds.push(booking.id);
@@ -154,7 +154,7 @@ export class MatchingService {
         `;
 
         // Emit booking.invalidated — NotificationsListener picks this up
-        const invalidatedPayload: EventPayloads.BookingInvalidatedPayload = {
+        const invalidatedPayload: BookingInvalidatedPayload = {
           bookingId: booking.id,
           tripId: payload.tripId,
           passengerId: booking.passengerId,
