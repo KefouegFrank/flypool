@@ -83,7 +83,7 @@ export class MatchingService {
 
     if (!isValid) {
       throw new ConflictException(
-        'This trip would cause you to miss your flight — buffer de sécurité violated',
+        'This trip would cause you to miss your flight',
       );
     }
   }
