@@ -27,12 +27,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         ? exception.getResponse()
         : 'Internal server error';
 
+    // LOG THE FULL EXCEPTION including stack trace
     this.logger.error(
       JSON.stringify({
         statusCode: status,
         path: request.url,
         method: request.method,
         message,
+        // Add these two lines to expose the real error
+        exceptionMessage: (exception as any)?.message,
+        stack: (exception as any)?.stack,
         timestamp: new Date().toISOString(),
       }),
     );

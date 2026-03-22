@@ -27,7 +27,7 @@ export class AuthService {
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   async register(dto: RegisterDto) {
     const existing = await this.usersService.findByEmail(dto.email);
@@ -83,8 +83,7 @@ export class AuthService {
   private async generateTokens(userId: string, email: string, role: string) {
     const payload: JwtPayload = { sub: userId, email, role };
 
-    // JwtModule is configured with secret + expiry via registerAsync
-    // sign() uses those defaults — no inline options needed
+    // Let JwtModule use its configured expiresIn
     const accessToken = this.jwtService.sign(payload);
 
     // Generate opaque refresh token — random UUID
