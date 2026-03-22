@@ -1,13 +1,102 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider   = "prisma-client-js"
+  engineType = "client"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum Role {
+  PASSENGER
+  DRIVER
+  ADMIN
+}
+
+enum TripStatus {
+  ACTIVE
+  FULL
+  CANCELLED
+  COMPLETED
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  INVALIDATED
+}
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String   @map("password_hash")
+  role          Role     @default(PASSENGER)
+  refreshToken  String?  @map("refresh_token")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  trips            Trip[]
+  bookings         Booking[]
+  passengerFlights PassengerFlight[]
+
+  @@map("users")
+}
+
+model Trip {
+  id             String     @id @default(uuid())
+  driverId       String     @map("driver_id")
+  departureTime  DateTime   @map("departure_time")
+  availableSeats Int        @map("available_seats")
+  status         TripStatus @default(ACTIVE)
+  delayMinutes   Int        @default(0) @map("delay_minutes")
+  version        Int        @default(0)
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+
+  // departure_point and arrival_point are GEOGRAPHY columns
+  // managed via raw SQL migration — not declared here
+  // because Prisma does not natively support PostGIS types
+
+  driver   User      @relation(fields: [driverId], references: [id])
+  bookings Booking[]
+
+  @@index([status])
+  @@index([departureTime])
+  @@map("trips")
+}
+
+model PassengerFlight {
+  id                  String   @id @default(uuid())
+  userId              String   @map("user_id")
+  flightNumber        String   @map("flight_number")
+  terminal            String?
+  flightTime          DateTime @map("flight_time")
+  checkinDurationMins Int      @default(90) @map("checkin_duration_mins")
+  safetyBufferMins    Int      @default(30) @map("safety_buffer_mins")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  user     User      @relation(fields: [userId], references: [id])
+  bookings Booking[]
+
+  @@index([userId])
+  @@map("passenger_flights")
+}
+
+model Booking {
+  id                String        @id @default(uuid())
+  tripId            String        @map("trip_id")
+  passengerId       String        @map("passenger_id")
+  passengerFlightId String        @map("passenger_flight_id")
+  status            BookingStatus @default(CONFIRMED)
+  createdAt         DateTime      @default(now()) @map("created_at")
+
+  trip            Trip            @relation(fields: [tripId], references: [id])
+  passenger       User            @relation(fields: [passengerId], references: [id])
+  passengerFlight PassengerFlight @relation(fields: [passengerFlightId], references: [id])
+
+  @@index([tripId])
+  @@index([passengerId])
+  @@index([passengerFlightId])
+  @@map("bookings")
 }
