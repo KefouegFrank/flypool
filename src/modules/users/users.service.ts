@@ -28,4 +28,28 @@ export class UsersService {
       data: { refreshToken: hashedToken },
     });
   }
+
+  async createFlight(userId: string, dto: import('./dto/create-flight.dto').CreateFlightDto) {
+    return this.prisma.passengerFlight.create({
+      data: {
+        userId,
+        flightNumber: dto.flightNumber,
+        terminal: dto.terminal,
+        flightTime: new Date(dto.flightTime),
+        checkinDurationMins: dto.checkinDurationMins,
+        safetyBufferMins: dto.safetyBufferMins,
+      },
+    });
+  }
+
+  async findFlightById(id: string) {
+    return this.prisma.passengerFlight.findUnique({ where: { id } });
+  }
+
+  async findFlightsByUser(userId: string) {
+    return this.prisma.passengerFlight.findMany({
+      where: { userId },
+      orderBy: { flightTime: 'asc' },
+    });
+  }
 }
