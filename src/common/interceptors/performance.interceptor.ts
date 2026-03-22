@@ -5,6 +5,7 @@ import {
   CallHandler,
   Logger,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 
@@ -15,7 +16,7 @@ export class PerformanceInterceptor implements NestInterceptor {
   private readonly logger = new Logger('Performance');
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    const req = context.switchToHttp().getRequest();
+    const req = context.switchToHttp().getRequest<Request>();
     const start = Date.now();
 
     return next.handle().pipe(
@@ -25,7 +26,7 @@ export class PerformanceInterceptor implements NestInterceptor {
           method: req.method,
           path: req.url,
           durationMs,
-          userId: req.user?.id ?? 'anonymous',
+          userId: (req as any).user?.id ?? 'anonymous',
           timestamp: new Date().toISOString(),
         };
 
