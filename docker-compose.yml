@@ -1,0 +1,56 @@
+version: '3.9'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flypool-app
+    ports:
+      - '3000:3000'
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - flypool-network
+
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: flypool-postgres
+    environment:
+      POSTGRES_USER: flypool
+      POSTGRES_PASSWORD: flypool
+      POSTGRES_DB: flypool
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U flypool']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - flypool-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: flypool-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    networks:
+      - flypool-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  flypool-network:
+    driver: bridge
