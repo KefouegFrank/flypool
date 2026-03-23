@@ -1,98 +1,161 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# FlyPool — Moteur de Convergence
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend engine for airport ride-sharing with real-time matching, atomic booking, and concurrent access control.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+**Challenge:** Senior Backend Engineer (NestJS Expert) — 48h technical test  
+**Stack:** NestJS 11 · TypeScript · PostgreSQL 16 + PostGIS 3.4 · Redis 7 · Docker  
+**Author:** Tetsopguim Kefoueg Frank Parker · kefoueg@gmail.com
 
-## Description
+---
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
+## Quick Start (3 commands)
 ```bash
-$ npm install
+# 1. Start infrastructure
+docker compose up postgres redis -d
+
+# 2. Install dependencies and run migrations
+npm install && npx prisma migrate dev && npx prisma generate
+
+# 3. Start the API
+npm run start:dev
 ```
 
-## Compile and run the project
+API available at `http://localhost:3000/api`
 
+---
+
+## Prerequisites
+
+| Tool | Version |
+|------|---------|
+| Node.js | 20 LTS or 22 |
+| npm | 10+ |
+| Docker Desktop | 26+ |
+| Docker Compose | v2+ |
+| k6 | latest (stress test only) |
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and fill in the values:
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+cp .env.example .env
 ```
 
-## Run tests
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `REDIS_URL` | Redis connection string |
+| `JWT_SECRET` | 256-bit secret for access tokens |
+| `JWT_REFRESH_SECRET` | 256-bit secret for refresh tokens |
+| `JWT_ACCESS_EXPIRY` | Access token expiry (e.g. `15m`) |
+| `JWT_REFRESH_EXPIRY` | Refresh token expiry (e.g. `7d`) |
+| `PORT` | HTTP port (default `3000`) |
 
+---
+
+## API Endpoints
+
+### Auth
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/auth/register` | Public | Register with role PASSENGER / DRIVER / ADMIN |
+| POST | `/api/auth/login` | Public | Login — returns JWT + sets HttpOnly RT cookie |
+| POST | `/api/auth/refresh` | Public | Rotate refresh token — returns new access token |
+| POST | `/api/auth/logout` | Any | Revoke refresh token immediately |
+
+### Trips
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/trips` | DRIVER | Create trip with departure/arrival coordinates |
+| GET | `/api/trips/nearby` | Any | PostGIS spatial search within radius (default 5km) |
+| GET | `/api/trips/:id` | Any | Get trip by ID |
+| PATCH | `/api/trips/:id/delay` | DRIVER (owner only) | Announce delay — triggers buffer recalculation |
+
+### Bookings
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/bookings` | PASSENGER | Book a trip — atomic with SELECT FOR UPDATE |
+| GET | `/api/bookings/my` | PASSENGER | List own bookings |
+| GET | `/api/bookings/:id` | Any | Get booking by ID |
+| PATCH | `/api/bookings/:id/cancel` | PASSENGER | Cancel booking — restores seat |
+
+### Passenger Flights
+| Method | Path | Role | Description |
+|--------|------|------|-------------|
+| POST | `/api/users/flights` | PASSENGER | Register a flight with check-in and buffer constraints |
+| GET | `/api/users/flights` | PASSENGER | List own flights |
+
+---
+
+## Running Tests
 ```bash
-# unit tests
-$ npm run test
+# Unit tests
+npm run test
 
-# e2e tests
-$ npm run test:e2e
+# Unit tests with coverage
+npm run test:cov
 
-# test coverage
-$ npm run test:cov
+# Stress test (requires running API + seed)
+npm run seed:stress
+k6 run tests/stress/booking-concurrency.js
 ```
 
-## Deployment
+---
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Stress Test — Overbooking Proof
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
+The stress test proves zero overbooking under maximum concurrency:
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+# Step 1 — seed: creates 1 trip (3 seats) + 100 passengers with tokens
+npm run seed:stress
+
+# Step 2 — fire 100 simultaneous booking requests
+k6 run tests/stress/booking-concurrency.js
+
+# Step 3 — verify the database directly
+# Expected: confirmed_bookings = 3, status = FULL, available_seats = 0
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+**Proven result:**
+```
+confirmed_bookings: 3
+rejected_bookings:  97
+server_errors:      0
+✓ no overbooking
+✓ trip correctly marked FULL
+```
 
-## Resources
+---
 
-Check out a few resources that may come in handy when working with NestJS:
+## Architecture Overview
+```
+CLIENT LAYER
+  Passenger App (REST) · Driver Dashboard (WebSocket + REST) · Admin UI (REST)
+        │
+NESTJS APPLICATION (NestJS 11 · TypeScript)
+  AuthModule        → JWT 15min + Refresh Token HttpOnly + RBAC
+  TripsModule       → CRUD + PostGIS ST_DWithin + ownership guard
+  BookingsModule    → Atomic CTE booking (SELECT FOR UPDATE)
+  MatchingModule    → Buffer de Sécurité Voyageur algorithm
+  GatewayModule     → WebSocket /trips namespace < 200ms latency
+  EventBus          → EventEmitter2 (booking.confirmed, invalidated, cancelled)
+        │
+INFRASTRUCTURE (Docker Compose)
+  PostgreSQL 16 + PostGIS 3.4   Redis 7
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+---
 
-## Support
+## Key Technical Decisions
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+See [DECISIONS.md](./DECISIONS.md) for full justification of every architectural choice.
 
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+| Decision | Choice |
+|----------|--------|
+| Concurrency | CTE atomic SQL — single round-trip, no pool exhaustion |
+| Geospatial | PostGIS ST_DWithin + GIST indexes |
+| Auth | JWT 15min + bcrypt-hashed RT in DB + HttpOnly cookie |
+| Event Bus | EventEmitter2 in-process (Redis Pub/Sub documented for scale-out) |
+| ORM | Prisma 7 with PrismaPg adapter + $queryRaw for PostGIS |
