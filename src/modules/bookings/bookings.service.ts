@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { MatchingService } from '../matching/matching.service';
@@ -22,7 +23,7 @@ export class BookingsService {
     private readonly prisma: PrismaService,
     private readonly matchingService: MatchingService,
     private readonly eventEmitter: EventEmitter2,
-  ) { }
+  ) {}
 
   async createBooking(passengerId: string, dto: CreateBookingDto) {
 
@@ -41,52 +42,52 @@ export class BookingsService {
     // 4. Insert the booking
     // 5. Mark FULL if seats reach 0
     // All in ONE round-trip — no interactive transaction, no pool exhaustion
-    const bookingId = require('crypto').randomUUID();
+    const bookingId = randomUUID();
 
     const result: any[] = await this.prisma.$queryRaw`
-    WITH locked_trip AS (
-      SELECT id, available_seats, status
-      FROM trips
-      WHERE id = ${dto.tripId}
-        AND status = 'ACTIVE'
-        AND available_seats > 0
-      FOR UPDATE
-    ),
-    decrement AS (
-      UPDATE trips
-      SET
-        available_seats = available_seats - 1,
-        status = CASE
-          WHEN available_seats - 1 = 0 THEN 'FULL'::"TripStatus"
-          ELSE status
-        END
-      WHERE id = ${dto.tripId}
-        AND EXISTS (SELECT 1 FROM locked_trip)
-      RETURNING id, available_seats
-    ),
-    new_booking AS (
-      INSERT INTO bookings (id, trip_id, passenger_id, passenger_flight_id, status, created_at)
+      WITH locked_trip AS (
+        SELECT id, available_seats, status
+        FROM trips
+        WHERE id = ${dto.tripId}
+          AND status = 'ACTIVE'
+          AND available_seats > 0
+        FOR UPDATE
+      ),
+      decrement AS (
+        UPDATE trips
+        SET
+          available_seats = available_seats - 1,
+          status = CASE
+            WHEN available_seats - 1 = 0 THEN 'FULL'::"TripStatus"
+            ELSE status
+          END
+        WHERE id = ${dto.tripId}
+          AND EXISTS (SELECT 1 FROM locked_trip)
+        RETURNING id, available_seats
+      ),
+      new_booking AS (
+        INSERT INTO bookings (id, trip_id, passenger_id, passenger_flight_id, status, created_at)
+        SELECT
+          ${bookingId},
+          ${dto.tripId},
+          ${passengerId},
+          ${dto.passengerFlightId},
+          'CONFIRMED'::"BookingStatus",
+          NOW()
+        WHERE EXISTS (SELECT 1 FROM decrement)
+        RETURNING id, trip_id, passenger_id, passenger_flight_id, status, created_at
+      )
       SELECT
-        ${bookingId},
-        ${dto.tripId},
-        ${passengerId},
-        ${dto.passengerFlightId},
-        'CONFIRMED'::"BookingStatus",
-        NOW()
-      WHERE EXISTS (SELECT 1 FROM decrement)
-      RETURNING id, trip_id, passenger_id, passenger_flight_id, status, created_at
-    )
-    SELECT
-      nb.id,
-      nb.trip_id        AS "tripId",
-      nb.passenger_id   AS "passengerId",
-      nb.passenger_flight_id AS "passengerFlightId",
-      nb.status,
-      nb.created_at     AS "createdAt",
-      d.available_seats AS "remainingSeats"
-    FROM new_booking nb
-    JOIN decrement d ON true
-  `;
+        nb.id,
+        nb.trip_id             AS "tripId",
+        nb.passenger_id        AS "passengerId",
+        nb.passenger_flight_id AS "passengerFlightId",
+        nb.status,
+        nb.created_at          AS "createdAt",
+        d.available_seats      AS "remainingSeats"
+      FROM new_booking nb
+      JOIN decrement d ON true
+    `;
 
     // If the CTE returned nothing, the trip was full or unavailable
     if (!result || result.length === 0) {
@@ -151,6 +152,8 @@ export class BookingsService {
       );
     }
 
+    // Cancel uses an interactive transaction — lower contention than booking
+    // creation, so pool exhaustion is not a concern on this path
     await this.prisma.$transaction(
       async (tx) => {
         await tx.booking.update({
@@ -160,12 +163,12 @@ export class BookingsService {
 
         // Restore the seat
         await tx.$executeRaw`
-        UPDATE trips
-        SET
-          available_seats = available_seats + 1,
-          status = 'ACTIVE'
-        WHERE id = ${booking.tripId}
-      `;
+          UPDATE trips
+          SET
+            available_seats = available_seats + 1,
+            status = 'ACTIVE'
+          WHERE id = ${booking.tripId}
+        `;
       },
       {
         timeout: 10000,
@@ -221,13 +224,5 @@ export class BookingsService {
       departureTime: trip.departureTime,
       delayMinutes: trip.delayMinutes,
     };
-  }
-
-  private async getRemainingSeats(tripId: string): Promise<number> {
-    const trip = await this.prisma.trip.findUnique({
-      where: { id: tripId },
-      select: { availableSeats: true },
-    });
-    return trip?.availableSeats ?? 0;
   }
 }

@@ -8,7 +8,7 @@ import type {
   BookingInvalidatedPayload,
 } from '../events/events.payloads';
 
-// Estimated transit duration from pickup point to airport in minutes
+// Estimated transit duration from pickup point to airport in minutes.
 const ESTIMATED_TRANSIT_MINS = 90;
 
 interface PassengerFlight {
@@ -63,7 +63,8 @@ export class MatchingService {
 
   /**
    * Called by BookingsService before creating a booking.
-   * Fetches the flight and trip, runs the buffer check.
+   * Fetches the passenger flight and runs the buffer check against
+   * the current trip snapshot.
    * Throws ConflictException if the match would cause a missed flight.
    */
   async validatePassengerBuffer(
@@ -91,6 +92,9 @@ export class MatchingService {
    * Triggered by trip.delay.announced event.
    * Recalculates all CONFIRMED bookings for the affected trip.
    * Invalidates any booking where the new delay breaks the safety buffer.
+   *
+   * Seat restoration is batched after the loop — one UPDATE for all
+   * invalidated bookings instead of one per booking.
    */
   @OnEvent(Events.TRIP_DELAY_ANNOUNCED)
   async recalculateOnDelay(payload: TripDelayAnnouncedPayload): Promise<void> {
@@ -98,7 +102,6 @@ export class MatchingService {
       `Recalculating bookings for trip ${payload.tripId} — new delay: ${payload.delayMinutes} min`,
     );
 
-    // Fetch the updated trip
     const trip = await this.prisma.trip.findUnique({
       where: { id: payload.tripId },
     });
@@ -110,7 +113,6 @@ export class MatchingService {
       return;
     }
 
-    // Fetch all confirmed bookings with their associated flight
     const confirmedBookings = await this.prisma.booking.findMany({
       where: {
         tripId: payload.tripId,
@@ -139,21 +141,11 @@ export class MatchingService {
       if (!isStillValid) {
         invalidatedIds.push(booking.id);
 
-        // Update booking status to INVALIDATED
         await this.prisma.booking.update({
           where: { id: booking.id },
           data: { status: 'INVALIDATED' },
         });
 
-        // Restore the seat — delay invalidation frees the place
-        await this.prisma.$executeRaw`
-          UPDATE trips
-          SET available_seats = available_seats + 1,
-              status = 'ACTIVE'
-          WHERE id = ${payload.tripId}
-        `;
-
-        // Emit booking.invalidated — NotificationsListener picks this up
         const invalidatedPayload: BookingInvalidatedPayload = {
           bookingId: booking.id,
           tripId: payload.tripId,
@@ -171,6 +163,24 @@ export class MatchingService {
           `Booking ${booking.id} still valid after delay recalculation`,
         );
       }
+    }
+
+    // ── Batch seat restoration ─────────────────────────────────────────────
+    // Restore all freed seats in a single UPDATE instead of one per booking.
+    // This avoids redundant writes and prevents the status flip from firing
+    // multiple times for the same trip.
+    if (invalidatedIds.length > 0) {
+      await this.prisma.$executeRaw`
+        UPDATE trips
+        SET
+          available_seats = available_seats + ${invalidatedIds.length},
+          status = 'ACTIVE'
+        WHERE id = ${payload.tripId}
+      `;
+
+      this.logger.log(
+        `Restored ${invalidatedIds.length} seat(s) to trip ${payload.tripId}`,
+      );
     }
 
     this.logger.log(
