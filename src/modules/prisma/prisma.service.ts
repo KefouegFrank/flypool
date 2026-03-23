@@ -10,6 +10,8 @@ export class PrismaService
   constructor() {
     const adapter = new PrismaPg({
       connectionString: process.env.DATABASE_URL,
+      // Increase pool to handle 100 concurrent transactions
+      max: 20,
     });
     super({ adapter });
   }

@@ -22,110 +22,116 @@ export class BookingsService {
     private readonly prisma: PrismaService,
     private readonly matchingService: MatchingService,
     private readonly eventEmitter: EventEmitter2,
-  ) {}
+  ) { }
 
   async createBooking(passengerId: string, dto: CreateBookingDto) {
-    const booking = await this.prisma.$transaction(
-      async (tx) => {
-        // ── Step 1: Acquire row-level lock ─────────────────────────────────────
-        // SELECT FOR UPDATE blocks any concurrent transaction from reading
-        // this row until we COMMIT. This is the anti-overbooking guarantee.
-        // Under 100 concurrent requests, transactions queue here and wait —
-        // the 30s timeout gives each one enough time to acquire the lock.
-        const trips: any[] = await tx.$queryRaw`
-        SELECT
-          id,
-          available_seats  AS "availableSeats",
-          status,
-          departure_time   AS "departureTime",
-          delay_minutes    AS "delayMinutes"
-        FROM trips
-        WHERE id = ${dto.tripId}
-        FOR UPDATE
-      `;
 
-        const trip = trips[0];
-
-        if (!trip) {
-          throw new NotFoundException('Trip not found');
-        }
-
-        if (trip.status !== 'ACTIVE') {
-          throw new ConflictException(
-            `Trip is not available — current status: ${trip.status}`,
-          );
-        }
-
-        if (trip.availableSeats <= 0) {
-          throw new ConflictException('No seats available on this trip');
-        }
-
-        // ── Step 2: Validate Buffer de Sécurité Voyageur ───────────────────────
-        // Done INSIDE the transaction so the trip data is consistent
-        // with what we just locked
-        await this.matchingService.validatePassengerBuffer(
-          dto.passengerFlightId,
-          {
-            departureTime: new Date(trip.departureTime),
-            delayMinutes: Number(trip.delayMinutes),
-          },
-        );
-
-        // ── Step 3: Decrement seat count atomically ────────────────────────────
-        await tx.$executeRaw`
-        UPDATE trips
-        SET available_seats = available_seats - 1
-        WHERE id = ${dto.tripId}
-      `;
-
-        // ── Step 4: Create the confirmed booking ──────────────────────────────
-        const newBooking = await tx.booking.create({
-          data: {
-            tripId: dto.tripId,
-            passengerId,
-            passengerFlightId: dto.passengerFlightId,
-            status: 'CONFIRMED',
-          },
-        });
-
-        // ── Step 5: Mark trip FULL if no seats remain ─────────────────────────
-        if (trip.availableSeats - 1 === 0) {
-          await tx.$executeRaw`
-          UPDATE trips
-          SET status = 'FULL'
-          WHERE id = ${dto.tripId}
-        `;
-          this.logger.log(`Trip ${dto.tripId} is now FULL`);
-        }
-
-        return newBooking;
-
-        // COMMIT here — row-level lock is released
-        // Any queued concurrent transaction now reads updated available_seats
-      },
-      {
-        timeout: 30000, // 30s — allows all 100 queued transactions to complete
-        maxWait: 35000, // max time waiting for a connection from the pool
-      },
+    // ── Pre-flight: validate buffer before touching the DB lock ────────────
+    const tripSnapshot = await this.getTripSnapshot(dto.tripId);
+    await this.matchingService.validatePassengerBuffer(
+      dto.passengerFlightId,
+      tripSnapshot,
     );
 
-    // ── Step 6: Emit booking.confirmed (outside transaction — non-blocking) ──
-    // Listeners: NotificationsListener, TicketListener, SeatUpdateListener
-    const confirmedPayload: BookingConfirmedPayload = {
-      bookingId: booking.id,
-      tripId: dto.tripId,
-      passengerId,
-      passengerFlightId: dto.passengerFlightId,
-      availableSeats: await this.getRemainingSeats(dto.tripId),
-    };
+    // ── Atomic booking via single raw SQL block ────────────────────────────
+    // Uses a CTE to:
+    // 1. Lock the trip row (FOR UPDATE)
+    // 2. Check seats > 0 in the same statement
+    // 3. Decrement available_seats atomically
+    // 4. Insert the booking
+    // 5. Mark FULL if seats reach 0
+    // All in ONE round-trip — no interactive transaction, no pool exhaustion
+    const bookingId = require('crypto').randomUUID();
 
-    this.eventEmitter.emit(Events.BOOKING_CONFIRMED, confirmedPayload);
+    const result: any[] = await this.prisma.$queryRaw`
+    WITH locked_trip AS (
+      SELECT id, available_seats, status
+      FROM trips
+      WHERE id = ${dto.tripId}
+        AND status = 'ACTIVE'
+        AND available_seats > 0
+      FOR UPDATE
+    ),
+    decrement AS (
+      UPDATE trips
+      SET
+        available_seats = available_seats - 1,
+        status = CASE
+          WHEN available_seats - 1 = 0 THEN 'FULL'::"TripStatus"
+          ELSE status
+        END
+      WHERE id = ${dto.tripId}
+        AND EXISTS (SELECT 1 FROM locked_trip)
+      RETURNING id, available_seats
+    ),
+    new_booking AS (
+      INSERT INTO bookings (id, trip_id, passenger_id, passenger_flight_id, status, created_at)
+      SELECT
+        ${bookingId},
+        ${dto.tripId},
+        ${passengerId},
+        ${dto.passengerFlightId},
+        'CONFIRMED'::"BookingStatus",
+        NOW()
+      WHERE EXISTS (SELECT 1 FROM decrement)
+      RETURNING id, trip_id, passenger_id, passenger_flight_id, status, created_at
+    )
+    SELECT
+      nb.id,
+      nb.trip_id        AS "tripId",
+      nb.passenger_id   AS "passengerId",
+      nb.passenger_flight_id AS "passengerFlightId",
+      nb.status,
+      nb.created_at     AS "createdAt",
+      d.available_seats AS "remainingSeats"
+    FROM new_booking nb
+    JOIN decrement d ON true
+  `;
+
+    // If the CTE returned nothing, the trip was full or unavailable
+    if (!result || result.length === 0) {
+      // Re-check to give a meaningful error
+      const trip = await this.prisma.trip.findUnique({
+        where: { id: dto.tripId },
+      });
+      if (!trip) throw new NotFoundException('Trip not found');
+      if (trip.status !== 'ACTIVE') {
+        throw new ConflictException(
+          `Trip is not available — current status: ${trip.status}`,
+        );
+      }
+      throw new ConflictException('No seats available on this trip');
+    }
+
+    const booking = result[0];
 
     this.logger.log(
       `Booking ${booking.id} confirmed — trip ${dto.tripId} — passenger ${passengerId}`,
     );
 
-    return booking;
+    if (booking.remainingSeats === 0) {
+      this.logger.log(`Trip ${dto.tripId} is now FULL`);
+    }
+
+    // ── Emit booking.confirmed (non-blocking) ─────────────────────────────
+    const confirmedPayload: BookingConfirmedPayload = {
+      bookingId: booking.id,
+      tripId: dto.tripId,
+      passengerId,
+      passengerFlightId: dto.passengerFlightId,
+      availableSeats: Number(booking.remainingSeats),
+    };
+
+    this.eventEmitter.emit(Events.BOOKING_CONFIRMED, confirmedPayload);
+
+    return {
+      id: booking.id,
+      tripId: booking.tripId,
+      passengerId: booking.passengerId,
+      passengerFlightId: booking.passengerFlightId,
+      status: booking.status,
+      createdAt: booking.createdAt,
+    };
   }
 
   async cancelBooking(bookingId: string, passengerId: string) {
@@ -152,6 +158,7 @@ export class BookingsService {
           data: { status: 'CANCELLED' },
         });
 
+        // Restore the seat
         await tx.$executeRaw`
         UPDATE trips
         SET
@@ -202,6 +209,18 @@ export class BookingsService {
     });
     if (!booking) throw new NotFoundException('Booking not found');
     return booking;
+  }
+
+  private async getTripSnapshot(tripId: string) {
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: tripId },
+      select: { departureTime: true, delayMinutes: true },
+    });
+    if (!trip) throw new NotFoundException('Trip not found');
+    return {
+      departureTime: trip.departureTime,
+      delayMinutes: trip.delayMinutes,
+    };
   }
 
   private async getRemainingSeats(tripId: string): Promise<number> {
